@@ -1,0 +1,6 @@
+[submodule "transformers"]
+	path = transformers
+	url = https://github.com/huggingface/transformers.git
+[submodule "datasets"]
+	path = datasets
+	url = git@github.com:huggingface/datasets.git
