@@ -29,18 +29,6 @@ from sklearn.metrics import (
 import transformers
 
 
-# ----------------------------
-# Configuration and utilities
-# ----------------------------
-# MODEL_CKPT = "distilbert-base-uncased"
-MODEL_CKPT = "answerdotai/ModernBERT-base"
-BATCH_SIZE = 64
-NUM_EPOCHS = 2
-LEARNING_RATE = 2e-5
-WEIGHT_DECAY = 0.01
-SEED = 42  # Set seeds for deterministic-ish training
-
-
 def set_seeds(seed: int, deterministic: bool = False):
     """
     Helper function for reproducible behavior to set the seed in `random`, `numpy`, `torch` and/or `tf` (if installed).
@@ -96,6 +84,15 @@ def plot_confusion_matrix(y_preds, y_true, labels):
 
 
 def main() -> None:
+    # Configuration
+    # MODEL_CKPT = "distilbert-base-uncased"
+    MODEL_CKPT = "answerdotai/ModernBERT-base"
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 2
+    LEARNING_RATE = 2e-5
+    WEIGHT_DECAY = 0.01
+    SEED = 42  # Set seeds for deterministic-ish training
+
     # Setup
     set_seeds(SEED, True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,13 +115,14 @@ def main() -> None:
 
     # Build model for sequence classification
     num_labels = emotions["train"].features["label"].num_classes
-    # Generic version
+
     if False:
+        # Generic transformer
         model = transformers.AutoModelForSequenceClassification.from_pretrained(
             MODEL_CKPT, num_labels=num_labels
         ).to(device)
-    # ModernBERT version
     else:
+        # ModernBERT transformer
         model = transformers.ModernBertForSequenceClassification.from_pretrained(
             MODEL_CKPT,
             num_labels=num_labels).to(device)
