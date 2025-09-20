@@ -26,13 +26,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
 )
-from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    Trainer,
-    TrainingArguments,
-    set_seed,
-)
+import transformers
 
 
 # ----------------------------
@@ -46,25 +40,31 @@ WEIGHT_DECAY = 0.01
 SEED = 42  # Set seeds for deterministic-ish training
 
 
-def configure_determinism(seed: int = SEED) -> torch.device:
-    """Configure random seeds and return the torch device to use.
+def set_seeds(seed: int, deterministic: bool = False):
+    """
+    Helper function for reproducible behavior to set the seed in `random`, `numpy`, `torch` and/or `tf` (if installed).
 
-    Note: Full determinism depends on many factors (CUDA, cuDNN, ops).
-    This sets seeds for Python, NumPy, PyTorch, and Transformers.
+    Args:
+        seed (`int`):
+            The seed to set.
+        deterministic (`bool`, *optional*, defaults to `False`):
+            Whether to use deterministic algorithms where available. Can slow down training.
     """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        # Optional: enable deterministic algorithms (may impact performance)
+    torch.cuda.manual_seed_all(seed)
+    transformers.set_seed(seed)
+
+    # Try to enforce determinism
+    if deterministic and torch.cuda.is_available():
+        import os
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    set_seed(seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-    return device
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cuda.matmul.allow_tf32 = False  # Disable TF32 (which uses mixed precision)
+        torch.backends.cudnn.allow_tf32 = False
 
 
 def tokenize_function(tokenizer, batch):
@@ -96,10 +96,11 @@ def plot_confusion_matrix(y_preds, y_true, labels):
 
 def main() -> None:
     # Setup
-    device = configure_determinism(SEED)
+    set_seeds(SEED, True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load tokenizer and dataset
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_CKPT)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(MODEL_CKPT)
     emotions = load_dataset("emotion")
 
     # Tokenize the dataset. The label column is preserved by default.
@@ -116,14 +117,14 @@ def main() -> None:
 
     # Build model for sequence classification
     num_labels = emotions["train"].features["label"].num_classes
-    model = AutoModelForSequenceClassification.from_pretrained(
+    model = transformers.AutoModelForSequenceClassification.from_pretrained(
         MODEL_CKPT, num_labels=num_labels
     ).to(device)
 
     # Training configuration
     logging_steps = max(1, len(emotions_encoded["train"]) // BATCH_SIZE)
     model_name = f"{MODEL_CKPT}-finetuned-emotion"
-    training_args = TrainingArguments(
+    training_args = transformers.TrainingArguments(
         output_dir=model_name,
         num_train_epochs=NUM_EPOCHS,
         learning_rate=LEARNING_RATE,
@@ -140,7 +141,7 @@ def main() -> None:
     )
 
     # Trainer handles training loop, evaluation, and metrics
-    trainer = Trainer(
+    trainer = transformers.Trainer(
         model=model,
         args=training_args,
         compute_metrics=compute_metrics,
