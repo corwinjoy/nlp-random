@@ -14,6 +14,7 @@ cd ..
 cd datasets
 pip install -e ".[quality]"
 cd ..
+pip install flash-attn --no-build-isolation
 pip install -f requirements.txt
 ```
 

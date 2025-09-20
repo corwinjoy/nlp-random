@@ -32,7 +32,8 @@ import transformers
 # ----------------------------
 # Configuration and utilities
 # ----------------------------
-MODEL_CKPT = "distilbert-base-uncased"
+# MODEL_CKPT = "distilbert-base-uncased"
+MODEL_CKPT = "answerdotai/ModernBERT-base"
 BATCH_SIZE = 64
 NUM_EPOCHS = 2
 LEARNING_RATE = 2e-5
@@ -117,9 +118,16 @@ def main() -> None:
 
     # Build model for sequence classification
     num_labels = emotions["train"].features["label"].num_classes
-    model = transformers.AutoModelForSequenceClassification.from_pretrained(
-        MODEL_CKPT, num_labels=num_labels
-    ).to(device)
+    # Generic version
+    if False:
+        model = transformers.AutoModelForSequenceClassification.from_pretrained(
+            MODEL_CKPT, num_labels=num_labels
+        ).to(device)
+    # ModernBERT version
+    else:
+        model = transformers.ModernBertForSequenceClassification.from_pretrained(
+            MODEL_CKPT,
+            num_labels=num_labels).to(device)
 
     # Training configuration
     logging_steps = max(1, len(emotions_encoded["train"]) // BATCH_SIZE)
