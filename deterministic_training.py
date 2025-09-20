@@ -1,118 +1,168 @@
-# Adapted from https://github.com/nlp-with-transformers/notebooks/blob/main/02_classification.ipynb
+"""
+Training script for fine-tuning DistilBERT on the
+Hugging Face Emotion dataset with deterministic behavior where possible.
 
-import pandas as pd
-from datasets import load_dataset
-from transformers import AutoTokenizer
-from transformers import AutoModel
-from transformers import Trainer, TrainingArguments
-import torch
-import torch.nn.functional as F
+- Loads and tokenizes the dataset
+- Fine-tunes a sequence classification head
+- Evaluates on the validation split
+- Plots a normalized confusion matrix
+
+Adapted from: https://github.com/nlp-with-transformers/notebooks/blob/main/02_classification.ipynb
+"""
+
+from __future__ import annotations
+
+# Standard library imports
+import random
+
+# Third-party imports
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-emotions = load_dataset("emotion")
-emotions.set_format(type="pandas")
-df = emotions["train"][:]
-df.head()
-
-
-model_ckpt = "distilbert-base-uncased"
-tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
-
-#from transformers import DistilBertTokenizer
-#distilbert_tokenizer = DistilBertTokenizer.from_pretrained(model_ckpt)
-
-def tokenize(batch):
-    return tokenizer(batch["text"].to_list(), padding=True, truncation=True)
-
-emotions_encoded = emotions.map(tokenize, batched=True, batch_size=None)
-for split in ("train", "test", "validation"):
-    emotions_encoded[split] = emotions_encoded[split].add_column(name="label", column=emotions[split]["label"])
-
-print(emotions_encoded["train"].column_names)
-emotions_encoded.set_format("torch",
-                            columns=["input_ids", "attention_mask", "label"])
+import torch
+from datasets import load_dataset
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+)
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    Trainer,
+    TrainingArguments,
+    set_seed,
+)
 
 
-base_model = AutoModel.from_pretrained(model_ckpt).to(device)
-
-def extract_hidden_states(batch):
-    # Place model inputs on the GPU
-    inputs = {k:v.to(device) for k,v in batch.items()
-              if k in tokenizer.model_input_names}
-    # Extract last hidden states
-    with torch.no_grad():
-        last_hidden_state = base_model(**inputs).last_hidden_state
-    # Return vector for [CLS] token
-    return {"hidden_state": last_hidden_state[:,0].cpu().numpy()}
-
-emotions_hidden = emotions_encoded.map(extract_hidden_states, batched=True)
-
-X_train = np.array(emotions_hidden["train"]["hidden_state"])
-X_valid = np.array(emotions_hidden["validation"]["hidden_state"])
-y_train = np.array(emotions_hidden["train"]["label"])
-y_valid = np.array(emotions_hidden["validation"]["label"])
-labels = emotions["train"].features["label"].names
+# ----------------------------
+# Configuration and utilities
+# ----------------------------
+MODEL_CKPT = "distilbert-base-uncased"
+BATCH_SIZE = 64
+NUM_EPOCHS = 2
+LEARNING_RATE = 2e-5
+WEIGHT_DECAY = 0.01
+SEED = 42  # Set seeds for deterministic-ish training
 
 
-from transformers import AutoModelForSequenceClassification
+def configure_determinism(seed: int = SEED) -> torch.device:
+    """Configure random seeds and return the torch device to use.
 
-num_labels = 6
-seq_model = (AutoModelForSequenceClassification
-         .from_pretrained(model_ckpt, num_labels=num_labels)
-         .to(device))
+    Note: Full determinism depends on many factors (CUDA, cuDNN, ops).
+    This sets seeds for Python, NumPy, PyTorch, and Transformers.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        # Optional: enable deterministic algorithms (may impact performance)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    set_seed(seed)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    return device
+
+
+def tokenize_function(tokenizer, batch):
+    """Tokenize a batch of examples from the Emotion dataset."""
+    # 'text' is the input field in the emotion dataset
+    return tokenizer(batch["text"], padding=True, truncation=True)
+
 
 def compute_metrics(pred):
+    """Compute accuracy and weighted F1 from Trainer predictions."""
     labels = pred.label_ids
     preds = pred.predictions.argmax(-1)
-    f1 = f1_score(labels, preds, average="weighted")
-    acc = accuracy_score(labels, preds)
-    return {"accuracy": acc, "f1": f1}
+    return {
+        "accuracy": accuracy_score(labels, preds),
+        "f1": f1_score(labels, preds, average="weighted"),
+    }
 
-# May need to login
-# huggingface-cli login
-
-batch_size = 64
-logging_steps = len(emotions_encoded["train"]) // batch_size
-model_name = f"{model_ckpt}-finetuned-emotion"
-training_args = TrainingArguments(output_dir=model_name,
-                                  num_train_epochs=2,
-                                  learning_rate=2e-5,
-                                  per_device_train_batch_size=batch_size,
-                                  per_device_eval_batch_size=batch_size,
-                                  weight_decay=0.01,
-                                  eval_strategy="epoch",
-                                  disable_tqdm=False,
-                                  logging_steps=logging_steps,
-                                  push_to_hub=False,
-                                  log_level="error")
-
-
-trainer = Trainer(model=seq_model, args=training_args,
-                  compute_metrics=compute_metrics,
-                  train_dataset=emotions_encoded["train"],
-                  eval_dataset=emotions_encoded["validation"],
-                  tokenizer=tokenizer)
-trainer.train()
-
-preds_output = trainer.predict(emotions_encoded["validation"])
-print(preds_output.metrics)
-
-from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 
 def plot_confusion_matrix(y_preds, y_true, labels):
+    """Plot a normalized confusion matrix for predictions vs. true labels."""
     cm = confusion_matrix(y_true, y_preds, normalize="true")
     fig, ax = plt.subplots(figsize=(6, 6))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
     disp.plot(cmap="Blues", values_format=".2f", ax=ax, colorbar=False)
     plt.title("Normalized confusion matrix")
+    plt.tight_layout()
     plt.show()
-y_preds = np.argmax(preds_output.predictions, axis=1)
 
-plot_confusion_matrix(y_preds, y_valid, labels)
+
+def main() -> None:
+    # Setup
+    device = configure_determinism(SEED)
+
+    # Load tokenizer and dataset
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_CKPT)
+    emotions = load_dataset("emotion")
+
+    # Tokenize the dataset. The label column is preserved by default.
+    emotions_encoded = emotions.map(
+        lambda batch: tokenize_function(tokenizer, batch),
+        batched=True,
+        batch_size=None,
+    )
+
+    # Restrict columns and set format to Torch tensors for Trainer
+    emotions_encoded.set_format(
+        type="torch", columns=["input_ids", "attention_mask", "label"]
+    )
+
+    # Build model for sequence classification
+    num_labels = emotions["train"].features["label"].num_classes
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_CKPT, num_labels=num_labels
+    ).to(device)
+
+    # Training configuration
+    logging_steps = max(1, len(emotions_encoded["train"]) // BATCH_SIZE)
+    model_name = f"{MODEL_CKPT}-finetuned-emotion"
+    training_args = TrainingArguments(
+        output_dir=model_name,
+        num_train_epochs=NUM_EPOCHS,
+        learning_rate=LEARNING_RATE,
+        per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=BATCH_SIZE,
+        weight_decay=WEIGHT_DECAY,
+        eval_strategy="epoch",  # run eval at the end of each epoch
+        disable_tqdm=False,
+        logging_steps=logging_steps,
+        push_to_hub=False,
+        log_level="error",
+        seed=SEED,
+        data_seed=SEED,
+    )
+
+    # Trainer handles training loop, evaluation, and metrics
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        compute_metrics=compute_metrics,
+        train_dataset=emotions_encoded["train"],
+        eval_dataset=emotions_encoded["validation"],
+        tokenizer=tokenizer,
+    )
+
+    # Train and evaluate
+    trainer.train()
+
+    preds_output = trainer.predict(emotions_encoded["validation"])
+    print("Validation metrics:", preds_output.metrics)
+
+    # Confusion matrix using predictions vs. true labels returned by Trainer
+    y_preds = np.argmax(preds_output.predictions, axis=1)
+    y_true = preds_output.label_ids
+    label_names = emotions["train"].features["label"].names
+    plot_confusion_matrix(y_preds, y_true, label_names)
+
+
+if __name__ == "__main__":
+    main()
 
 
