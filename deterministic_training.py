@@ -3,7 +3,7 @@
 import pandas as pd
 from datasets import load_dataset
 from transformers import AutoTokenizer
-from transformers import AutoModelForSequenceClassification
+from transformers import AutoModel
 from transformers import Trainer, TrainingArguments
 import torch
 import torch.nn.functional as F
@@ -27,11 +27,18 @@ tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
 #distilbert_tokenizer = DistilBertTokenizer.from_pretrained(model_ckpt)
 
 def tokenize(batch):
-    return tokenizer(batch["text"], padding=True, truncation=True)
+    return tokenizer(batch["text"].to_list(), padding=True, truncation=True)
 
 emotions_encoded = emotions.map(tokenize, batched=True, batch_size=None)
+for split in ("train", "test", "validation"):
+    emotions_encoded[split] = emotions_encoded[split].add_column(name="label", column=emotions[split]["label"])
+
+print(emotions_encoded["train"].column_names)
 emotions_encoded.set_format("torch",
                             columns=["input_ids", "attention_mask", "label"])
+
+
+base_model = AutoModel.from_pretrained(model_ckpt).to(device)
 
 def extract_hidden_states(batch):
     # Place model inputs on the GPU
@@ -39,7 +46,7 @@ def extract_hidden_states(batch):
               if k in tokenizer.model_input_names}
     # Extract last hidden states
     with torch.no_grad():
-        last_hidden_state = model(**inputs).last_hidden_state
+        last_hidden_state = base_model(**inputs).last_hidden_state
     # Return vector for [CLS] token
     return {"hidden_state": last_hidden_state[:,0].cpu().numpy()}
 
@@ -52,14 +59,12 @@ y_valid = np.array(emotions_hidden["validation"]["label"])
 labels = emotions["train"].features["label"].names
 
 
-# AutoModelForSequenceClassification model has a classification head on top of the pretrained model outputs,
-# which can be easily trained with the base model. We just need to specify how many labels the model has
-# to predict (six in our case), since this dictates the number of outputs the classification head has:
+from transformers import AutoModelForSequenceClassification
+
 num_labels = 6
-model = (AutoModelForSequenceClassification
+seq_model = (AutoModelForSequenceClassification
          .from_pretrained(model_ckpt, num_labels=num_labels)
          .to(device))
-
 
 def compute_metrics(pred):
     labels = pred.label_ids
@@ -80,14 +85,14 @@ training_args = TrainingArguments(output_dir=model_name,
                                   per_device_train_batch_size=batch_size,
                                   per_device_eval_batch_size=batch_size,
                                   weight_decay=0.01,
-                                  evaluation_strategy="epoch",
+                                  eval_strategy="epoch",
                                   disable_tqdm=False,
                                   logging_steps=logging_steps,
-                                  push_to_hub=True,
+                                  push_to_hub=False,
                                   log_level="error")
 
 
-trainer = Trainer(model=model, args=training_args,
+trainer = Trainer(model=seq_model, args=training_args,
                   compute_metrics=compute_metrics,
                   train_dataset=emotions_encoded["train"],
                   eval_dataset=emotions_encoded["validation"],
