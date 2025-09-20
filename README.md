@@ -18,4 +18,6 @@ pip install flash-attn --no-build-isolation
 pip install -f requirements.txt
 ```
 
+# Usage
+Run `deterministic_training.py` after activating the virtual environment.
 
