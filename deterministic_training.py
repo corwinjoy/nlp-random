@@ -19,12 +19,15 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import os
+import json
 from sklearn.metrics import (
     ConfusionMatrixDisplay,
     accuracy_score,
     confusion_matrix,
     f1_score,
 )
+from transformers import Trainer, TrainingArguments
 
 import transformers
 from datasets import load_dataset
@@ -157,6 +160,10 @@ def main() -> None:
         tokenizer=tokenizer,
     )
 
+    # Output starting weights
+    weights_file = os.path.join(training_args.output_dir, "starting_weights.txt")
+    output_model_weights(trainer, training_args, weights_file)
+
     # Train and evaluate
     trainer.train()
 
@@ -168,6 +175,27 @@ def main() -> None:
     y_true = preds_output.label_ids
     label_names = emotions["train"].features["label"].names
     plot_confusion_matrix(y_preds, y_true, label_names)
+
+    # Write model weights to a text file (JSON Lines format: one parameter per line)
+    # File will be saved inside the training output directory
+    weights_file = os.path.join(training_args.output_dir, "final_weights.txt")
+    output_model_weights(trainer, training_args, weights_file)
+
+
+def output_model_weights(trainer: Trainer, training_args: TrainingArguments, weights_file: str):
+    print("Writing model weights to:", weights_file)
+    os.makedirs(training_args.output_dir, exist_ok=True)
+    with open(weights_file, "w", encoding="utf-8") as f:
+        for name, param in trainer.model.named_parameters():
+            tensor = param.detach().cpu()
+            record = {
+                "name": name,
+                "shape": list(tensor.shape),
+                "values": tensor.reshape(-1).tolist(),
+            }
+            f.write(json.dumps(record))
+            f.write("\n")
+    print("Done.")
 
 
 if __name__ == "__main__":
