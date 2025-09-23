@@ -4,3 +4,4 @@ numpy
 torch
 sklearn
 umap-learn==0.5.1
+flash-attn
